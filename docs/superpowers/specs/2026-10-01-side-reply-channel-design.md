@@ -47,6 +47,7 @@ what is going on.
 |---|---|
 | Gating | Prompt only; tool always visible, description carries the rule |
 | Marker | Fixed, hard-coded `※ ` prefix (U+203B + space); not configurable; never the plugin name |
+| Planner awareness of marker | None; never mentioned in tool description, parameters, or results |
 | Category / footer | None; single `text` parameter |
 | History & storage | Sync into planner history under `side_reply_channel` source kind **and** store in DB |
 | Length limit | None; send whatever the planner writes |
@@ -84,7 +85,6 @@ what is going on.
 
 **Detailed description:**
 
-- 消息会自动加上 `※ ` 前缀，表明这不是正常回复。
 - 用途：告知大家回复功能出了问题、报告错误、调试信息，必要时简短转述你本想说的话。
 - 不要用它代替 reply 进行日常聊天；reply 成功后也不要用它重复发言。
 - 你写的文字会原样发送，不经过表达方式选择、分段、错别字等处理，请直接写最终要发出的话。
@@ -93,7 +93,10 @@ what is going on.
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `text` | string | yes | 要发送的正文，无需自己添加 `※` 前缀。 |
+| `text` | string | yes | 要发送的正文。 |
+
+**Prefix is invisible to the planner:** no planner-facing text (brief/detailed description, parameter description,
+tool result) mentions the `※ ` prefix. It is a send-time artifact for humans who know the convention.
 
 **Results returned to the planner** (`{"success": bool, "content": str}`; Host maps `content` to the tool result /
 error message):
@@ -228,6 +231,8 @@ Offline, no Host required, SDK located via sibling `../maibot-plugin-sdk` (same 
 - Send raises → `success: false` with exception message
 - Success content echoes the planner's stripped text without the `※ ` prefix, plus the "继续使用 reply" reminder
 - `get_components()` marks `side_reply` with `visibility == "visible"`
+- No planner-facing string (tool brief/detailed description, parameter descriptions, success/failure content)
+  contains `※`
 
 `tests/smoke_test.py`:
 
@@ -247,6 +252,9 @@ PYTHONPATH=.:../maibot-plugin-sdk pytest -v
 - **Planner rendering of the custom source kind:** synced messages with a non-`guided_reply` kind are not flagged
   `is_self_message`; confirm in a live chat that the planner sees them under the bot's nickname (same as
   `send_image`) and does not treat them as someone else speaking.
+- **Prefix leaking into normal replies:** the synced history copy contains the `※ ` prefix, so the planner (and
+  possibly the replyer, depending on how it filters non-`guided_reply` history) will see `※ …` lines. Check that
+  normal replies don't start imitating the `※` marker; if they do, raise it before shipping.
 - **CLI platform:** built-in `reply` special-cases the CLI platform (`render_cli_message`). Check whether
   `send.text` works for CLI chats; if not, document CLI as unsupported in the README.
 - **SDK result shape:** confirm the SDK returns the full `{"success", "sent", "message_id", "error"}` dict for
