@@ -1,0 +1,33 @@
+{
+  "manifest_version": 2,
+  "id": "com.0-hz.side-reply-channel",
+  "version": "0.1.0",
+  "name": "恕我直言（Side Reply Channel）",
+  "description": "为 Maisaka 规划器提供常驻的 side_reply 旁路发言工具：绕过回复生成器，把规划器写好的文字直接发到当前聊天，并以 ※ 前缀标记。仅供 reply 工具失败时告知故障、报告错误与调试使用。",
+  "author": {
+    "name": "kes",
+    "url": "https://github.com/yufei-pan"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/yufei-pan/maibot-side-reply-channel",
+    "homepage": "https://github.com/yufei-pan/maibot-side-reply-channel",
+    "documentation": "https://github.com/yufei-pan/maibot-side-reply-channel/blob/main/README.md",
+    "issues": "https://github.com/yufei-pan/maibot-side-reply-channel/issues"
+  },
+  "host_application": {
+    "min_version": "1.2.0",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.8.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "send.text"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN"
+  }
+}
