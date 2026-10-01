@@ -11,10 +11,38 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from maibot_sdk import CONFIG_RELOAD_SCOPE_SELF, Field, MaiBotPlugin, PluginConfigBase
+from maibot_sdk import CONFIG_RELOAD_SCOPE_SELF, Field, MaiBotPlugin, PluginConfigBase, Tool
+from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 CURRENT_CONFIG_VERSION = "1.0.0"
 SHIPPED_CONFIG_TEMPLATE_NAME = "config.default.toml"
+
+SIDE_REPLY_TOOL_NAME = "side_reply"
+SIDE_REPLY_PREFIX_MARK = "※"
+SIDE_REPLY_PREFIX = f"{SIDE_REPLY_PREFIX_MARK} "
+SIDE_REPLY_SOURCE_KIND = "side_reply_channel"
+SIDE_REPLY_DESCRIPTION = (
+    "旁路发言：绕过回复生成器，把你写好的文字原样发到当前聊天。"
+    "仅在 reply 工具失败时使用（如回复生成器不可用、生成失败、发送失败）；正常情况下必须使用 reply。"
+    "可用于告知大家回复功能出了问题、报告错误、提供调试信息，必要时简短转述你本想说的话；"
+    "不要用它代替 reply 日常聊天，reply 成功后也不要用它重复发言。"
+    "文字会原样发送，不经过表达方式选择、分段、错别字等处理，请直接写最终要发出的话。"
+)
+SIDE_REPLY_TEXT_DESCRIPTION = "要发送的正文。"
+SIDE_REPLY_SUCCESS_TEMPLATE = '已通过旁路通道发送："{text}"。这不是正常回复；回复功能恢复后请继续使用 reply。'
+SIDE_REPLY_FAILURE_PREFIX = "旁路发送失败："
+
+
+def build_outgoing_text(body: str) -> str:
+    """给规划器正文加上旁路标记；正文已以标记开头时保持原样。"""
+
+    if body.startswith(SIDE_REPLY_PREFIX_MARK):
+        return body
+    return f"{SIDE_REPLY_PREFIX}{body}"
+
+
+def _failure(reason: str) -> dict[str, Any]:
+    return {"success": False, "content": f"{SIDE_REPLY_FAILURE_PREFIX}{reason}"}
 
 
 class PluginSectionConfig(PluginConfigBase):
@@ -79,7 +107,7 @@ class SideReplyChannelPlugin(MaiBotPlugin):
         return normalized, migrated_changed or sdk_changed
 
     async def on_load(self) -> None:
-        self.ctx.logger.info("恕我直言已加载")
+        self.ctx.logger.info("恕我直言已加载：旁路发言工具 %s 已注册", SIDE_REPLY_TOOL_NAME)
 
     async def on_unload(self) -> None:
         self.ctx.logger.info("恕我直言已卸载")
@@ -88,6 +116,56 @@ class SideReplyChannelPlugin(MaiBotPlugin):
         del config_data
         if scope == CONFIG_RELOAD_SCOPE_SELF:
             self.ctx.logger.info("恕我直言配置已更新: version=%s", version)
+
+    @Tool(
+        SIDE_REPLY_TOOL_NAME,
+        description=SIDE_REPLY_DESCRIPTION,
+        parameters=[
+            ToolParameterInfo(
+                name="text",
+                param_type=ToolParamType.STRING,
+                description=SIDE_REPLY_TEXT_DESCRIPTION,
+                required=True,
+            ),
+        ],
+        visibility="visible",
+    )
+    async def handle_side_reply(self, text: Any = "", **kwargs: Any) -> dict[str, Any]:
+        """把规划器写好的文字加上旁路标记后直接发到当前聊天。"""
+
+        stream_id = str(kwargs.get("stream_id") or kwargs.get("chat_id") or "").strip()
+        if not stream_id:
+            return _failure("缺少当前聊天的 stream_id，无法发送。")
+
+        body = "" if text is None else str(text).strip()
+        if not body.lstrip(SIDE_REPLY_PREFIX_MARK).strip():
+            return _failure("text 为空，没有可发送的内容。")
+
+        outgoing_text = build_outgoing_text(body)
+        try:
+            result = await self.ctx.send.text(
+                outgoing_text,
+                stream_id,
+                return_details=True,
+                storage_message=True,
+                sync_to_maisaka_history=True,
+                maisaka_source_kind=SIDE_REPLY_SOURCE_KIND,
+            )
+        except Exception as exc:
+            self.ctx.logger.exception("旁路发送异常: stream_id=%s", stream_id)
+            return _failure(f"发送时发生异常：{exc}")
+
+        if not isinstance(result, Mapping) or not result.get("sent"):
+            self.ctx.logger.warning("旁路发送未被平台确认: stream_id=%s result=%r", stream_id, result)
+            return _failure("平台未确认发送，消息可能没有发出。")
+
+        self.ctx.logger.info(
+            "旁路发送成功: stream_id=%s length=%d message_id=%s",
+            stream_id,
+            len(outgoing_text),
+            result.get("message_id") or "",
+        )
+        return {"success": True, "content": SIDE_REPLY_SUCCESS_TEMPLATE.format(text=body)}
 
 
 def create_plugin() -> SideReplyChannelPlugin:
