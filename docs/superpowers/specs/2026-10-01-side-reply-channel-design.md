@@ -28,7 +28,7 @@ what is going on.
 - Make the tool always visible to the planner (no `tool_search` discovery step while things are broken)
 - Instruct the planner, via the tool description, to use it only after `reply` fails
 - Mark every side-channel message with a fixed `※ ` prefix
-- Record sent messages in planner history and the database, without feeding expression / behavior / jargon learners
+- Record sent messages in live planner history (not the database), without feeding expression / behavior learners
 - Plugin-only; no Host/SDK source changes
 
 ## Non-goals (v1)
@@ -49,7 +49,7 @@ what is going on.
 | Marker | Fixed, hard-coded `※ ` prefix (U+203B + space); not configurable; never the plugin name |
 | Planner awareness of marker | None; never mentioned in tool description, parameters, or results |
 | Category / footer | None; single `text` parameter |
-| History & storage | Sync into planner history under `side_reply_channel` source kind **and** store in DB |
+| History & storage | Sync into planner history under `side_reply_channel` source kind; **not** stored in DB (revised after final review: Host `_restore_recent_context_from_db` relabels stored bot messages as `guided_reply` on restart) |
 | Length limit | None; send whatever the planner writes |
 | Plugin shape | Single `@Tool`; no hooks, no commands |
 | Tool name | `side_reply` |
@@ -123,7 +123,7 @@ error message):
        outgoing_text,
        stream_id,
        return_details=True,
-       storage_message=True,
+       storage_message=False,
        sync_to_maisaka_history=True,
        maisaka_source_kind="side_reply_channel",
    )
@@ -141,10 +141,11 @@ error message):
 |---|---|
 | Replyer model request | Host send service (`send_service._send_to_target_with_message`) |
 | Expression selection sub-agent | Platform IO / message gateway / adapter (e.g. NapCat) |
-| `maisaka.replyer.*` hooks | DB storage of the sent message |
-| `maisaka.reply.before_post_process` hook | Maisaka history sync |
+| `maisaka.replyer.*` hooks | Maisaka history sync (live session only) |
+| `maisaka.reply.before_post_process` hook | Memory automation send notification |
 | Splitter, Chinese typo post-process | |
 | Reply-effect tracking | |
+| DB storage of the sent message | |
 
 ### Error handling
 
@@ -226,7 +227,7 @@ Offline, no Host required, SDK located via sibling `../maibot-plugin-sdk` (same 
 - Whitespace is stripped before prefixing
 - Empty / whitespace-only text → `success: false`, send not called
 - Missing `stream_id` → `success: false`, send not called
-- Exact send kwargs: `return_details=True`, `storage_message=True`, `sync_to_maisaka_history=True`,
+- Exact send kwargs: `return_details=True`, `storage_message=False`, `sync_to_maisaka_history=True`,
   `maisaka_source_kind="side_reply_channel"`
 - Send returns `{"sent": False, ...}` or a non-mapping value → `success: false` with reason
 - Send raises → `success: false` with exception message

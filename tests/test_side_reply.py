@@ -92,7 +92,7 @@ def test_send_kwargs_are_exact() -> None:
             "text": "※ hi",
             "stream_id": STREAM_ID,
             "return_details": True,
-            "storage_message": True,
+            "storage_message": False,
             "sync_to_maisaka_history": True,
             "maisaka_source_kind": "side_reply_channel",
         }

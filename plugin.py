@@ -147,7 +147,8 @@ class SideReplyChannelPlugin(MaiBotPlugin):
                 outgoing_text,
                 stream_id,
                 return_details=True,
-                storage_message=True,
+                # Host 重启时会把库中麦麦发出的消息恢复为 guided_reply（正常回复），故不入库
+                storage_message=False,
                 sync_to_maisaka_history=True,
                 maisaka_source_kind=SIDE_REPLY_SOURCE_KIND,
             )
