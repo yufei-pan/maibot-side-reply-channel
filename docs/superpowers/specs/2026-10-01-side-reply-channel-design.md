@@ -98,7 +98,8 @@ what is going on.
 **Results returned to the planner** (`{"success": bool, "content": str}`; Host maps `content` to the tool result /
 error message):
 
-- Success: `已通过旁路通道发送："<实际发送的完整文本，含 ※ 前缀>"。这不是正常回复；回复功能恢复后请继续使用 reply。`
+- Success: `已通过旁路通道发送："<规划器给出的 text（去除首尾空白）>"。这不是正常回复；回复功能恢复后请继续使用 reply。`
+  The result echoes the planner's own text only; it does not mention or include the `※ ` prefix.
 - Failure: `success: false` with a reason; nothing reaches the chat. Reasons:
   - empty / whitespace-only `text`
   - missing `stream_id` in the invocation
@@ -225,7 +226,7 @@ Offline, no Host required, SDK located via sibling `../maibot-plugin-sdk` (same 
   `maisaka_source_kind="side_reply_channel"`
 - Send returns `{"sent": False, ...}` (with and without `error`) → `success: false` with reason
 - Send raises → `success: false` with exception message
-- Success content contains the sent text and the "继续使用 reply" reminder
+- Success content echoes the planner's stripped text without the `※ ` prefix, plus the "继续使用 reply" reminder
 - `get_components()` marks `side_reply` with `visibility == "visible"`
 
 `tests/smoke_test.py`:
