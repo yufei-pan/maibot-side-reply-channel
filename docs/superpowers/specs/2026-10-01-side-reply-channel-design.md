@@ -58,7 +58,9 @@ what is going on.
 
 | Source | Patterns reused |
 |---|---|
-| `maibot-fetch-url-plugin` | `get_components()` override setting `metadata.visibility = "visible"` + `core_tool` |
+| `maibot-fetch-url-plugin` | Planner-visible plugin tool via `metadata.visibility = "visible"` (fetch-url sets it in a `get_components()` override because it is config-dependent; ours is unconditional, so it goes straight into `@Tool(..., visibility="visible")`) |
+| Host `src/core/tooling.py` `ToolSpec` | Planner tool definition uses `description` only; `detailed_description` is ignored |
+| Host `src/plugin_runtime/host/authorization.py` | Capability calls are checked against the manifest `capabilities` list |
 | `maibot-world-clock` | Repo layout, manifest shape, `config.default.toml`, config normalize pattern, offline tests |
 | Host `src/maisaka/builtin_tool/reply.py` | Failure results the planner sees when `reply` breaks |
 | Host `src/maisaka/reasoning_engine.py` `_build_action_tool_definitions` | Plugin tools are deferred unless `metadata.visibility == "visible"` |
@@ -75,19 +77,14 @@ what is going on.
 
 **Name:** `side_reply`
 
-**Visibility:** always visible. `get_components()` finds the `side_reply` component and sets
-`metadata["visibility"] = "visible"` and `metadata["core_tool"] = True`, exactly like fetch-url's
-`always_visible_for_planner` path (but unconditional).
+**Visibility:** always visible. The decorator passes `visibility="visible"` as tool metadata
+(`@Tool(..., visibility="visible")`); Host `ComponentQueryService._get_tool_visibility` reads it, so no
+`get_components()` override is needed.
 
-**Brief description** (shown every planner turn; carries the gating rule):
+**Description** (the only text Host puts in the planner's tool definition — `detailed_description` is ignored by
+Host `ToolSpec`, so all guidance lives here; shown every planner turn and carries the gating rule):
 
-> 旁路发言：绕过回复生成器，把你写好的文字原样发到当前聊天。仅在 reply 工具失败时使用（如回复生成器不可用、生成失败、发送失败）；正常情况下必须使用 reply。
-
-**Detailed description:**
-
-- 用途：告知大家回复功能出了问题、报告错误、调试信息，必要时简短转述你本想说的话。
-- 不要用它代替 reply 进行日常聊天；reply 成功后也不要用它重复发言。
-- 你写的文字会原样发送，不经过表达方式选择、分段、错别字等处理，请直接写最终要发出的话。
+> 旁路发言：绕过回复生成器，把你写好的文字原样发到当前聊天。仅在 reply 工具失败时使用（如回复生成器不可用、生成失败、发送失败）；正常情况下必须使用 reply。可用于告知大家回复功能出了问题、报告错误、提供调试信息，必要时简短转述你本想说的话；不要用它代替 reply 日常聊天，reply 成功后也不要用它重复发言。文字会原样发送，不经过表达方式选择、分段、错别字等处理，请直接写最终要发出的话。
 
 **Parameters:**
 
@@ -95,7 +92,7 @@ what is going on.
 |---|---|---|---|
 | `text` | string | yes | 要发送的正文。 |
 
-**Prefix is invisible to the planner:** no planner-facing text (brief/detailed description, parameter description,
+**Prefix is invisible to the planner:** no planner-facing text (tool description, parameter description,
 tool result) mentions the `※ ` prefix. It is a send-time artifact for humans who know the convention.
 
 **Results returned to the planner** (`{"success": bool, "content": str}`; Host maps `content` to the tool result /
@@ -106,7 +103,9 @@ error message):
 - Failure: `success: false` with a reason; nothing reaches the chat. Reasons:
   - empty / whitespace-only `text`
   - missing `stream_id` in the invocation
-  - platform send reported failure (include Host `error` if present)
+  - platform send reported failure (`sent: false`). The SDK reduces `return_details=True` results to
+    `{"sent", "message_id"}` and drops Host's `error`, so the planner gets a generic reason; Host logs the cause.
+    This also covers a missing `send.text` capability grant.
   - exception raised by the send RPC (include exception message)
 
 ### Data flow
@@ -131,7 +130,8 @@ error message):
    ```
 
    No `set_reply`, no `typing`.
-5. Plugin interprets the result: `sent` true → success; otherwise failure with Host `error` if provided.
+5. Plugin interprets the result: a mapping with truthy `sent` → success; anything else → failure (generic reason;
+   the unexpected result is logged with `repr`).
 6. Plugin logs (zh-CN): stream_id, text length, platform message_id on success; warning with reason on failure;
    `logger.exception`-style traceback on exceptions.
 
@@ -198,16 +198,17 @@ config_version = "1.0.0"
 
 - Declared via a `PluginConfigBase` model with a `plugin` section (`enabled`, `config_version`) and
   `json_schema_extra` labels in zh-CN.
-- `CURRENT_CONFIG_VERSION = "1.0.0"` plus a `_normalize_side_reply_config` routine using the SDK helpers
-  (`merge_plugin_config_data`, `extract_plugin_config_version`, `validate_plugin_config`) so future schema changes
-  have a migration path.
+- `CURRENT_CONFIG_VERSION = "1.0.0"` plus a `_migrate_side_reply_config` step that aligns
+  `plugin.config_version` (SDK's base `normalize_plugin_config` merges defaults and validates but never bumps the
+  version), then defers to `super().normalize_plugin_config` so future schema changes have a migration path.
+- Host's runner reads `[plugin] enabled` itself and skips loading a disabled plugin, so the tool handler does not
+  re-check it.
 - `config.default.toml` is the shipped template; live `config.toml` is gitignored.
 
 ### Plugin code
 
 - One `MaiBotPlugin` subclass with:
   - `side_reply` `@Tool` handler (`async def handle_side_reply(self, text: str = "", **kwargs)`)
-  - `get_components()` override marking `side_reply` visible
   - Thin `on_load` / `on_unload` / `on_config_update` with zh-CN log lines
 - Module-level `SIDE_REPLY_PREFIX = "※ "` and `SIDE_REPLY_SOURCE_KIND = "side_reply_channel"` constants
 - Module-level `create_plugin()` factory
@@ -227,12 +228,11 @@ Offline, no Host required, SDK located via sibling `../maibot-plugin-sdk` (same 
 - Missing `stream_id` → `success: false`, send not called
 - Exact send kwargs: `return_details=True`, `storage_message=True`, `sync_to_maisaka_history=True`,
   `maisaka_source_kind="side_reply_channel"`
-- Send returns `{"sent": False, ...}` (with and without `error`) → `success: false` with reason
+- Send returns `{"sent": False, ...}` or a non-mapping value → `success: false` with reason
 - Send raises → `success: false` with exception message
 - Success content echoes the planner's stripped text without the `※ ` prefix, plus the "继续使用 reply" reminder
 - `get_components()` marks `side_reply` with `visibility == "visible"`
-- No planner-facing string (tool brief/detailed description, parameter descriptions, success/failure content)
-  contains `※`
+- No planner-facing string (tool description, parameter descriptions, success/failure content) contains `※`
 
 `tests/smoke_test.py`:
 
@@ -255,14 +255,20 @@ PYTHONPATH=.:../maibot-plugin-sdk pytest -v
 - **Prefix leaking into normal replies:** the synced history copy contains the `※ ` prefix, so the planner (and
   possibly the replyer, depending on how it filters non-`guided_reply` history) will see `※ …` lines. Check that
   normal replies don't start imitating the `※` marker; if they do, raise it before shipping.
-- **CLI platform:** built-in `reply` special-cases the CLI platform (`render_cli_message`). Check whether
-  `send.text` works for CLI chats; if not, document CLI as unsupported in the README.
-- **SDK result shape:** confirm the SDK returns the full `{"success", "sent", "message_id", "error"}` dict for
-  `return_details=True` (multi-field result, so not unwrapped) and handle it accordingly.
-- **Capability declaration:** confirm whether Host enforces `capabilities` in the manifest; keep `send.text`
-  declared either way.
+
+## Resolved during planning
+
+- **SDK result shape:** with `return_details=True`, `send.text` returns `{"sent": bool, "message_id": str | None}`;
+  Host's `error` is dropped (see failure reasons above).
+- **Capability declaration:** Host enforces manifest `capabilities` (`authorization.check_capability`);
+  `send.text` must be declared, and the smoke test pins it.
+- **Tool description:** Host ignores `detailed_description`; all guidance is in `description`.
+- **Visibility:** set via `@Tool(..., visibility="visible")`; no `get_components()` override.
+- **CLI platform:** built-in `reply` special-cases CLI (`render_cli_message`) and the send service has no CLI path,
+  so `side_reply` is unsupported in CLI chats (it returns a failure). Documented in the README.
 
 ## Deployment
 
-After tests pass, copy the plugin into the live instance's plugin directory under `/mnt/klein/mein`. Do **not**
+After tests pass, copy the plugin into `/mnt/klein/mein/plugins/com_0-hz_side-reply-channel/` (the live
+instance's plugin directory, mounted into the container at `/MaiMBot/plugins`; live Host is 1.3.1). Do **not**
 restart the Host; the user restarts when there is no activity.
