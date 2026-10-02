@@ -5,6 +5,12 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-10-02
+
+### 新增
+
+- 旁路发送增加全局冷却，默认 60 秒。冷却未结束时拒绝发送，并把剩余等待秒数返回给规划器。可在 `channel.cooldown_seconds` 调整，设为 `0` 则关闭冷却
+
 ## [0.1.0] - 2026-10-01
 
 ### 新增

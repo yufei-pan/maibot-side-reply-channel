@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
 import shutil
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -14,7 +17,8 @@ from typing import Any
 from maibot_sdk import CONFIG_RELOAD_SCOPE_SELF, Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
-CURRENT_CONFIG_VERSION = "1.0.0"
+CURRENT_CONFIG_VERSION = "1.1.0"
+DEFAULT_COOLDOWN_SECONDS = 60
 SHIPPED_CONFIG_TEMPLATE_NAME = "config.default.toml"
 
 SIDE_REPLY_TOOL_NAME = "side_reply"
@@ -27,10 +31,12 @@ SIDE_REPLY_DESCRIPTION = (
     "可用于告知大家回复功能出了问题、报告错误、提供调试信息，必要时简短转述你本想说的话；"
     "不要用它代替 reply 日常聊天，reply 成功后也不要用它重复发言。"
     "文字会原样发送，不经过表达方式选择、分段、错别字等处理，请直接写最终要发出的话。"
+    "成功发送后进入全局冷却；冷却结束前再次调用会失败，结果会写明还需等待的秒数。"
 )
 SIDE_REPLY_TEXT_DESCRIPTION = "要发送的正文。"
 SIDE_REPLY_SUCCESS_TEMPLATE = '已通过旁路通道发送："{text}"。这不是正常回复；回复功能恢复后请继续使用 reply。'
 SIDE_REPLY_FAILURE_PREFIX = "旁路发送失败："
+SIDE_REPLY_COOLDOWN_TEMPLATE = "冷却中，还需等待 {seconds} 秒才能再次旁路发送。"
 
 
 def build_outgoing_text(body: str) -> str:
@@ -64,16 +70,35 @@ class PluginSectionConfig(PluginConfigBase):
     )
 
 
+class ChannelSectionConfig(PluginConfigBase):
+    """旁路发送限制。"""
+
+    __ui_label__ = "旁路通道"
+    __ui_icon__ = "timer"
+    __ui_order__ = 1
+
+    cooldown_seconds: int = Field(
+        default=DEFAULT_COOLDOWN_SECONDS,
+        ge=0,
+        description="两次成功旁路发送之间的最短间隔，单位秒，对所有聊天全局生效。0 表示不限制。",
+        json_schema_extra={
+            "label": "发送冷却（秒）",
+            "i18n": {"zh-CN": {"label": "发送冷却（秒）"}},
+        },
+    )
+
+
 class SideReplyConfig(PluginConfigBase):
     """插件根配置。"""
 
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
+    channel: ChannelSectionConfig = Field(default_factory=ChannelSectionConfig)
 
 
 def _migrate_side_reply_config(config_data: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
     """把配置迁移到当前 config_version。
 
-    目前只有 1.0.0，迁移只需对齐版本号；SDK 基类负责补齐默认值与校验，但不会改写版本号。
+    SDK 基类负责补齐新增字段（如 channel.cooldown_seconds）并校验，但不会改写版本号。
     """
 
     migrated = dict(config_data)
@@ -100,6 +125,37 @@ class SideReplyChannelPlugin(MaiBotPlugin):
     """恕我直言插件主体。"""
 
     config_model = SideReplyConfig
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._last_successful_send_at: float | None = None
+        self._send_lock: asyncio.Lock | None = None
+        self._send_lock_loop: asyncio.AbstractEventLoop | None = None
+
+    def _now(self) -> float:
+        return time.monotonic()
+
+    def _send_guard(self) -> asyncio.Lock:
+        """同一事件循环内串行化冷却检查与发送，避免并发调用同时通过冷却。"""
+
+        loop = asyncio.get_running_loop()
+        if self._send_lock is None or self._send_lock_loop is not loop:
+            self._send_lock = asyncio.Lock()
+            self._send_lock_loop = loop
+        return self._send_lock
+
+    def _configured_cooldown_seconds(self) -> float:
+        try:
+            return float(self.config.channel.cooldown_seconds)
+        except RuntimeError:
+            return float(DEFAULT_COOLDOWN_SECONDS)
+
+    def _cooldown_remaining_seconds(self) -> float:
+        cooldown = self._configured_cooldown_seconds()
+        last_sent_at = self._last_successful_send_at
+        if cooldown <= 0 or last_sent_at is None:
+            return 0.0
+        return cooldown - (self._now() - last_sent_at)
 
     def normalize_plugin_config(self, config_data: Mapping[str, Any] | None) -> tuple[dict[str, Any], bool]:
         migrated, migrated_changed = _migrate_side_reply_config(dict(config_data or {}))
@@ -141,24 +197,37 @@ class SideReplyChannelPlugin(MaiBotPlugin):
         if not body.lstrip(SIDE_REPLY_PREFIX_MARK).strip():
             return _failure("text 为空，没有可发送的内容。")
 
-        outgoing_text = build_outgoing_text(body)
-        try:
-            result = await self.ctx.send.text(
-                outgoing_text,
-                stream_id,
-                return_details=True,
-                # Host 重启时会把库中麦麦发出的消息恢复为 guided_reply（正常回复），故不入库
-                storage_message=False,
-                sync_to_maisaka_history=True,
-                maisaka_source_kind=SIDE_REPLY_SOURCE_KIND,
-            )
-        except Exception as exc:
-            self.ctx.logger.exception("旁路发送异常: stream_id=%s", stream_id)
-            return _failure(f"发送时发生异常：{exc}")
+        async with self._send_guard():
+            remaining = self._cooldown_remaining_seconds()
+            if remaining > 0:
+                wait_seconds = math.ceil(remaining)
+                self.ctx.logger.info(
+                    "旁路发送被冷却拒绝: stream_id=%s wait_seconds=%d",
+                    stream_id,
+                    wait_seconds,
+                )
+                return _failure(SIDE_REPLY_COOLDOWN_TEMPLATE.format(seconds=wait_seconds))
 
-        if not isinstance(result, Mapping) or not result.get("sent"):
-            self.ctx.logger.warning("旁路发送未被平台确认: stream_id=%s result=%r", stream_id, result)
-            return _failure("平台未确认发送，消息可能没有发出。")
+            outgoing_text = build_outgoing_text(body)
+            try:
+                result = await self.ctx.send.text(
+                    outgoing_text,
+                    stream_id,
+                    return_details=True,
+                    # Host 重启时会把库中麦麦发出的消息恢复为 guided_reply（正常回复），故不入库
+                    storage_message=False,
+                    sync_to_maisaka_history=True,
+                    maisaka_source_kind=SIDE_REPLY_SOURCE_KIND,
+                )
+            except Exception as exc:
+                self.ctx.logger.exception("旁路发送异常: stream_id=%s", stream_id)
+                return _failure(f"发送时发生异常：{exc}")
+
+            if not isinstance(result, Mapping) or not result.get("sent"):
+                self.ctx.logger.warning("旁路发送未被平台确认: stream_id=%s result=%r", stream_id, result)
+                return _failure("平台未确认发送，消息可能没有发出。")
+
+            self._last_successful_send_at = self._now()
 
         self.ctx.logger.info(
             "旁路发送成功: stream_id=%s length=%d message_id=%s",

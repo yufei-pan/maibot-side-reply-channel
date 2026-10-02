@@ -41,11 +41,28 @@ class FakeCtx:
         self.logger = MagicMock()
 
 
-def make_plugin(send: FakeSend | None = None) -> tuple[side_reply.SideReplyChannelPlugin, FakeSend]:
+def make_plugin(
+    send: FakeSend | None = None,
+    *,
+    cooldown_seconds: int | None = None,
+) -> tuple[side_reply.SideReplyChannelPlugin, FakeSend]:
     fake_send = send if send is not None else FakeSend(CONFIRMED)
     instance = side_reply.SideReplyChannelPlugin()
     instance._set_context(FakeCtx(fake_send))  # type: ignore[arg-type]
+    config: dict[str, Any] = {}
+    if cooldown_seconds is not None:
+        config = {
+            "plugin": {"enabled": True, "config_version": side_reply.CURRENT_CONFIG_VERSION},
+            "channel": {"cooldown_seconds": cooldown_seconds},
+        }
+    instance.set_plugin_config(config)
     return instance, fake_send
+
+
+def freeze_clock(instance: side_reply.SideReplyChannelPlugin, now: float = 1_000.0) -> dict[str, float]:
+    clock = {"now": now}
+    instance._now = lambda: clock["now"]  # type: ignore[method-assign]
+    return clock
 
 
 def call(instance: side_reply.SideReplyChannelPlugin, **kwargs: Any) -> dict[str, Any]:
@@ -158,6 +175,79 @@ def test_tool_is_visible_to_planner() -> None:
     assert "仅在 reply 工具失败时使用" in side_reply.SIDE_REPLY_DESCRIPTION
     assert [parameter["name"] for parameter in component["metadata"]["parameters"]] == ["text"]
     assert component["metadata"]["parameters"][0]["required"] is True
+
+
+def test_second_send_inside_cooldown_is_blocked_and_reports_wait() -> None:
+    instance, fake_send = make_plugin()
+    clock = freeze_clock(instance)
+
+    first = call(instance, text="第一次", stream_id=STREAM_ID)
+    assert first["success"] is True
+
+    clock["now"] = 1_030.0
+    second = call(instance, text="第二次", stream_id="other-stream")
+    assert second == {
+        "success": False,
+        "content": "旁路发送失败：冷却中，还需等待 30 秒才能再次旁路发送。",
+    }
+    assert len(fake_send.calls) == 1
+    assert PREFIX_MARK not in second["content"]
+
+
+def test_send_allowed_once_cooldown_elapses() -> None:
+    instance, fake_send = make_plugin()
+    clock = freeze_clock(instance)
+    assert call(instance, text="第一次", stream_id=STREAM_ID)["success"] is True
+    clock["now"] += 60
+    assert call(instance, text="第二次", stream_id=STREAM_ID)["success"] is True
+    assert [item["text"] for item in fake_send.calls] == ["※ 第一次", "※ 第二次"]
+
+
+def test_fractional_remaining_rounds_up() -> None:
+    instance, fake_send = make_plugin()
+    clock = freeze_clock(instance)
+    call(instance, text="第一次", stream_id=STREAM_ID)
+    clock["now"] += 59.2
+    second = call(instance, text="第二次", stream_id=STREAM_ID)
+    assert second["content"] == "旁路发送失败：冷却中，还需等待 1 秒才能再次旁路发送。"
+    assert len(fake_send.calls) == 1
+
+
+def test_failed_send_does_not_start_cooldown() -> None:
+    fake_send = FakeSend({"sent": False})
+    instance, _ = make_plugin(fake_send)
+    freeze_clock(instance)
+    assert call(instance, text="第一次", stream_id=STREAM_ID)["success"] is False
+    fake_send.result = CONFIRMED
+    assert call(instance, text="第二次", stream_id=STREAM_ID)["success"] is True
+    assert len(fake_send.calls) == 2
+
+
+def test_send_exception_does_not_start_cooldown() -> None:
+    fake_send = FakeSend(CONFIRMED, exc=RuntimeError("rpc 断开"))
+    instance, _ = make_plugin(fake_send)
+    freeze_clock(instance)
+    assert call(instance, text="第一次", stream_id=STREAM_ID)["success"] is False
+    fake_send.exc = None
+    assert call(instance, text="第二次", stream_id=STREAM_ID)["success"] is True
+
+
+def test_zero_cooldown_allows_immediate_resend() -> None:
+    instance, fake_send = make_plugin(cooldown_seconds=0)
+    freeze_clock(instance)
+    assert call(instance, text="第一次", stream_id=STREAM_ID)["success"] is True
+    assert call(instance, text="第二次", stream_id=STREAM_ID)["success"] is True
+    assert len(fake_send.calls) == 2
+
+
+def test_empty_text_during_cooldown_keeps_empty_error() -> None:
+    instance, fake_send = make_plugin()
+    clock = freeze_clock(instance)
+    call(instance, text="第一次", stream_id=STREAM_ID)
+    clock["now"] += 10
+    result = call(instance, text="  ", stream_id=STREAM_ID)
+    assert result["content"] == "旁路发送失败：text 为空，没有可发送的内容。"
+    assert len(fake_send.calls) == 1
 
 
 def test_planner_facing_strings_never_mention_prefix() -> None:

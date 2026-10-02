@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "com.0-hz.side-reply-channel",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "name": "恕我直言（Side Reply Channel）",
-  "description": "为 Maisaka 规划器提供常驻的 side_reply 旁路发言工具：绕过回复生成器，把规划器写好的文字直接发到当前聊天，并以 ※ 前缀标记。仅供 reply 工具失败时告知故障、报告错误与调试使用。",
+  "description": "为 Maisaka 规划器提供常驻的 side_reply 旁路发言工具：绕过回复生成器，把规划器写好的文字直接发到当前聊天，并以 ※ 前缀标记。仅供 reply 工具失败时告知故障、报告错误与调试使用。成功发送后有全局冷却（默认 60 秒），冷却中会把剩余等待秒数返回给规划器。",
   "author": {
     "name": "kes",
     "url": "https://github.com/yufei-pan"

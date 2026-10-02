@@ -23,7 +23,7 @@ def test_manifest() -> None:
     manifest = json.loads((PLUGIN_DIR / "_manifest.json").read_text(encoding="utf-8"))
     assert manifest["manifest_version"] == 2
     assert manifest["id"] == "com.0-hz.side-reply-channel"
-    assert manifest["version"] == "0.1.0"
+    assert manifest["version"] == "0.2.0"
     assert manifest["name"] == "恕我直言（Side Reply Channel）"
     assert manifest["host_application"] == {"min_version": "1.2.0", "max_version": "1.99.99"}
     assert manifest["sdk"] == {"min_version": "2.8.0", "max_version": "2.99.99"}
@@ -34,7 +34,10 @@ def test_manifest() -> None:
 
 def test_default_toml_matches_model() -> None:
     data = tomllib.loads((PLUGIN_DIR / "config.default.toml").read_text(encoding="utf-8"))
-    assert data == {"plugin": {"enabled": True, "config_version": side_reply_plugin.CURRENT_CONFIG_VERSION}}
+    assert data == {
+        "plugin": {"enabled": True, "config_version": side_reply_plugin.CURRENT_CONFIG_VERSION},
+        "channel": {"cooldown_seconds": 60},
+    }
     print("ok: config.default.toml")
 
 
@@ -50,15 +53,38 @@ def test_config_normalization() -> None:
     instance = side_reply_plugin.SideReplyChannelPlugin()
 
     normalized, changed = instance.normalize_plugin_config({})
-    assert normalized == {"plugin": {"enabled": True, "config_version": "1.0.0"}}
+    assert normalized == {
+        "plugin": {"enabled": True, "config_version": "1.1.0"},
+        "channel": {"cooldown_seconds": 60},
+    }
     assert changed is True
 
     normalized, changed = instance.normalize_plugin_config({"plugin": {"enabled": False, "config_version": "0.0.1"}})
-    assert normalized == {"plugin": {"enabled": False, "config_version": "1.0.0"}}
+    assert normalized == {
+        "plugin": {"enabled": False, "config_version": "1.1.0"},
+        "channel": {"cooldown_seconds": 60},
+    }
     assert changed is True
 
-    normalized, changed = instance.normalize_plugin_config({"plugin": {"enabled": True, "config_version": "1.0.0"}})
-    assert normalized == {"plugin": {"enabled": True, "config_version": "1.0.0"}}
+    normalized, changed = instance.normalize_plugin_config(
+        {"plugin": {"enabled": True, "config_version": "1.0.0"}, "channel": {"cooldown_seconds": 15}}
+    )
+    assert normalized == {
+        "plugin": {"enabled": True, "config_version": "1.1.0"},
+        "channel": {"cooldown_seconds": 15},
+    }
+    assert changed is True
+
+    normalized, changed = instance.normalize_plugin_config(
+        {
+            "plugin": {"enabled": True, "config_version": "1.1.0"},
+            "channel": {"cooldown_seconds": 60},
+        }
+    )
+    assert normalized == {
+        "plugin": {"enabled": True, "config_version": "1.1.0"},
+        "channel": {"cooldown_seconds": 60},
+    }
     assert changed is False
     print("ok: config normalization")
 

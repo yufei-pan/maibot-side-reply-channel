@@ -1,9 +1,13 @@
 # 恕我直言（Side Reply Channel）插件配置
 #
-# 本插件没有可调参数；关闭后 Host 不会加载插件，规划器也就看不到 side_reply 工具。
+# 关闭插件后 Host 不会加载它，规划器也就看不到 side_reply 工具。
 
 [plugin]
 # 是否启用插件
 enabled = true
 # 配置版本
-config_version = "1.0.0"
+config_version = "1.1.0"
+
+[channel]
+# 两次成功旁路发送之间的最短间隔（秒）。全局生效；0 表示不限制。
+cooldown_seconds = 60
