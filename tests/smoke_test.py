@@ -25,8 +25,8 @@ def test_manifest() -> None:
     assert manifest["id"] == "com.0-hz.side-reply-channel"
     assert manifest["version"] == "0.2.0"
     assert manifest["name"] == "恕我直言（Side Reply Channel）"
-    assert manifest["host_application"] == {"min_version": "1.2.0", "max_version": "1.99.99"}
-    assert manifest["sdk"] == {"min_version": "2.8.0", "max_version": "2.99.99"}
+    assert manifest["host_application"] == {"min_version": "1.2.0", "max_version": "1.3.99"}
+    assert manifest["sdk"] == {"min_version": "2.8.0", "max_version": "2.14.99"}
     assert manifest["capabilities"] == ["send.text"]
     assert manifest["dependencies"] == []
     print("ok: manifest")
